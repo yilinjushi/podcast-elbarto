@@ -1,0 +1,92 @@
+name: Private podcast pipeline
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Capture, resume, or publish independently reviewed audio
+        type: choice
+        options: [probe, guest-audio, automatic, capture, resume, publish]
+        default: probe
+      task:
+        description: Task ID required for resume/publish (not a URL or secret)
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: podcast-single-writer
+  cancel-in-progress: false
+jobs:
+  due:
+    if: github.repository_owner == 'yilinjushi' && github.event.repository.private == false && (github.event_name != 'schedule' || vars.PODCAST_AUTOMATION_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.date.outputs.run }}
+    steps:
+      - id: date
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import datetime, os
+          today = datetime.datetime.now(datetime.timezone.utc).date()
+          due = os.environ['EVENT'] != 'schedule' or (today - datetime.date(2026, 9, 22)).days % 3 == 0
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('run=' + str(due).lower() + '\n')
+          PY
+  podcast:
+    needs: due
+    # Missing/false readiness flag skips allocation. No schedule before acceptance.
+    if: needs.due.outputs.run == 'true' && vars.PODCAST_CLOUD_VALIDATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements-podcast.txt
+      - if: github.event_name == 'schedule' || inputs.action == 'automatic'
+        run: |
+          pip install -r requirements-podcast-review.txt
+          python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-base.en', local_dir=os.path.join(os.environ['RUNNER_TEMP'], 'podcast-asr'))"
+      - run: python -m playwright install --with-deps chromium
+      - run: npm ci --prefix podcast
+      - run: npx --prefix podcast playwright install --with-deps chromium
+      - name: Install media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg xvfb
+      - name: Verify media tools
+        run: ffmpeg -version && ffprobe -version
+      - name: Run with private state and redacted output
+        env:
+          PODCAST_ACTION: ${{ github.event_name == 'schedule' && 'automatic' || inputs.action }}
+          PODCAST_TASK: ${{ inputs.task }}
+          PODCAST_ALLOWED_OWNER: yilinjushi
+          PODCAST_STORE_BACKEND: s3
+          PODCAST_BUCKET: x-bookmarks-podcast
+          PODCAST_S3_ENDPOINT: https://b1975f68b4b8c2551782f6d87dd7e64d.r2.cloudflarestorage.com
+          AWS_ACCESS_KEY_ID: ${{ secrets.PODCAST_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PODCAST_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          PODCAST_BASE_URL: ${{ secrets.PODCAST_BASE_URL }}
+          X_SESSION_JSON: ${{ secrets.X_SESSION_JSON }}
+          PI_STORAGE_STATE_JSON: ${{ secrets.PI_STORAGE_STATE_JSON }}
+          PYTHONUTF8: '1'
+          PODCAST_ASR_MODEL: ${{ runner.temp }}/podcast-asr
+        run: |
+          if [ "$PODCAST_ACTION" = "guest-audio" ]; then
+            xvfb-run -a python podcast_guest_probe.py
+          else
+            python podcast_cloud.py
+          fi
+# No private text, browser state or media in Git, Actions caches or artifacts.
+# Schedule is gated separately; it stays disabled until cloud validation passes.

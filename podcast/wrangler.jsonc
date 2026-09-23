@@ -1,0 +1,10 @@
+{
+  "name": "x-bookmarks-podcast",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "r2_buckets": [{"binding": "AUDIO", "bucket_name": "x-bookmarks-podcast"}],
+  "vars": {"OBJECT_PREFIX": "podcast"},
+  "observability": {"enabled": false}
+}

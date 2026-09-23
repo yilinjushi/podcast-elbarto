@@ -1,0 +1,2 @@
+# Optional local review tool; no paid API and no automatic publication approval.
+faster-whisper==1.2.1

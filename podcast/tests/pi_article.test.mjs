@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
+import {splitArticle,generateArticle,joinAudio} from '../pi_article.mjs';
+import {durableSync,extractReplyBody,buildPiPrompt,assertPunctuationOnly} from '../pi_capture.mjs';
+import {chromium} from 'playwright';
+const hash=x=>createHash('sha256').update(x).digest('hex');
+test('segments preserve every source character and bounded paragraph ranges',()=>{
+const source='Title\r\n\r\n'+Array.from({length:30},(_,i)=>`Paragraph ${i}: `+'word '.repeat(90)).join('\n\n');
+const groups=splitArticle(source);assert.equal(groups.map(g=>g.text).join(''),source);assert.ok(groups.length>2);groups.forEach((g,i)=>{assert.ok(g.text.length<=6000);assert.equal(g.start,i?groups[i-1].end:0);assert.equal(g.sha256,hash(g.text));});
+});
+test('durable sync failure is fail-closed and reports no child process output',()=>{const oldFlag=process.env.PODCAST_DURABLE_SYNC;const oldPython=process.env.PODCAST_PYTHON;try{process.env.PODCAST_DURABLE_SYNC='true';process.env.PODCAST_PYTHON='__missing_pi_test_python__';assert.throws(()=>durableSync(),{message:'PI_DURABLE_SYNC_FAILED: checkpoint persistence failed; execution stopped'});}finally{if(oldFlag===undefined)delete process.env.PODCAST_DURABLE_SYNC;else process.env.PODCAST_DURABLE_SYNC=oldFlag;if(oldPython===undefined)delete process.env.PODCAST_PYTHON;else process.env.PODCAST_PYTHON=oldPython;}});
+test('manual repair instructions stay separate from untouched source and are never inferred',()=>{const source='Keep 2022 and evals. This is article text.';const ordinary=buildPiPrompt({text:source});assert.ok(!ordinary.includes('<review_instructions>'));const repaired=buildPiPrompt({text:source,includeTitle:false,repairNotes:'Preserve the year 2022 and the term evals.'});assert.ok(repaired.includes('<review_instructions>'));assert.ok(repaired.endsWith(`<article>\n\n${source}\n</article>`));assert.ok(repaired.includes('Retain technical terms exactly'));assert.throws(()=>buildPiPrompt({text:source,repairNotes:' '}),/nonempty/);});
+test('punctuation-only gate preserves numeric expressions, signs, dates, terms and case',()=>{
+for(const [source,changed] of [['0.5','05'],['.5','5'],['-3','3'],['2022','recently'],['2022-03-04','2022-04-03'],['evals','evaluations'],['AI','ai'],['C++','C']])assert.throws(()=>assertPunctuationOnly({text:source},changed),/PI_TEXT_CHANGED/);
+assert.equal(assertPunctuationOnly({title:'Sensor trial',text:'In 2022 the value was -3 and 0.5.\nWe use evals.'},'Sensor trial.\nIn 2022, the value was -3 and 0.5; We use evals.').passed,true);
+assert.throws(()=>assertPunctuationOnly({title:'Sensor trial',text:'Exact words.'},'Sensor trial. Sensor trial. Exact words.'),/PI_TEXT_CHANGED/);
+assert.equal(assertPunctuationOnly({title:'Ignored',includeTitle:false,text:'Exact words.'},'Exact words!').passed,true);
+assert.ok(buildPiPrompt({mode:'punctuation_only',text:'Exact words.'}).includes('Do not add, delete, replace, reorder'));
+});
+test('only allowlisted sentence-boundary first-letter case is accepted and recorded',()=>{
+const result=assertPunctuationOnly({text:'We move forward. For example, use evals.'},'We move forward—for example, use evals.');
+assert.deepEqual(result.caseAdjustments,[{tokenIndex:3,source:'For',reply:'for',sourceSentenceStart:true,replySentenceStart:false}]);
+for(const [source,changed] of [['Apple makes products.','apple makes products.'],['AI helps.','ai helps.'],['We use For examples.','We use for examples.'],['We use THE examples.','We use the examples.']])assert.throws(()=>assertPunctuationOnly({text:source},changed),/PI_TEXT_CHANGED/);
+assert.equal(assertPunctuationOnly({text:'Start here.\nThe next idea.'},'Start here; the next idea.').caseAdjustments.length,1);
+});
+test('observed reply DOM excludes toolbar Sources but preserves prose words',async()=>{const browser=await chromium.launch({headless:true});try{const page=await browser.newPage();await page.setContent('<div data-chat-message="sample"><div class="flex w-full items-center gap-3"><div><div>Sources are essential.</div><div>Copy the number 12, not 2.</div></div></div><div style="opacity:1;height:48px"><button aria-label="Copy message">Copy</button><div role="tooltip">Read aloud</div><div>Good response</div><div>Bad response</div><div>More options</div><div>Sources</div></div></div>');assert.equal(await page.locator('[data-chat-message]').evaluate(extractReplyBody),'Sources are essential.\nCopy the number 12, not 2.');await page.setContent('<div data-chat-message="unknown">Unrecognized layout</div>');await assert.rejects(page.locator('[data-chat-message]').evaluate(extractReplyBody),/DOM_CHANGED/);}finally{await browser.close();}});
+test('oversized paragraph fails without truncation',()=>assert.throws(()=>splitArticle('a'.repeat(6001)),/PARAGRAPH_TOO_LONG/));
+test('article resume skips verified complete segment and fetch-resumes checkpoint',async()=>{
+const dir=await mkdtemp(path.join(tmpdir(),'pi-article-test-'));const article={title:'T',text:'one two three\n\nfour five six'};const seen=[];let failed=false;
+const capture=async(input,out,opts)=>{seen.push({input,resume:opts.resume});if(!input.includeTitle&&!failed){failed=true;await writeFile(path.join(out,'checkpoint.json'),JSON.stringify({messageSid:'test'}));throw new Error('network');}const audio=Buffer.from('test audio');const result={audioPath:path.join(out,'episode.mp3'),audioSha256:hash(audio),sourceSha256:hash(input.text),adaptedText:input.text,durationSeconds:2};await writeFile(result.audioPath,audio);await writeFile(path.join(out,'result.json'),JSON.stringify(result));return result;};
+try{await assert.rejects(generateArticle(article,dir,{targetWords:3,capture,join:async()=>({})}),/network/);const result=await generateArticle(article,dir,{targetWords:3,capture,join:async()=>({}),resume:true});assert.equal(seen.length,3);assert.equal(seen[0].input.title,'T');assert.equal(seen[1].input.title,'');assert.equal(seen[2].resume,true);assert.equal(result.qualityStatus,'needs_review');await assert.rejects(generateArticle({...article,text:'changed'},dir,{capture,resume:true}),/changed/);}finally{await rm(dir,{recursive:true,force:true});}
+});
+test('resume without manifest never calls capture',async()=>{const dir=await mkdtemp(path.join(tmpdir(),'pi-article-test-'));try{await assert.rejects(generateArticle({text:'hello'},dir,{resume:true,capture:()=>assert.fail('submitted')}),/MANIFEST_MISSING/);}finally{await rm(dir,{recursive:true,force:true});}});
+test('real ffmpeg join produces fully decoded combined duration',async t=>{const ffmpeg=process.env.FFMPEG||'ffmpeg';if(spawnSync(ffmpeg,['-version']).status!==0){t.skip('ffmpeg unavailable');return;}const dir=await mkdtemp(path.join(tmpdir(),'pi-article-test-'));try{const results=[];for(let i=0;i<2;i++){const audioPath=path.join(dir,`tone-${i}.wav`);assert.equal(spawnSync(ffmpeg,['-v','error','-f','lavfi','-i',`sine=frequency=${400+i*200}:duration=1`,'-c:a','pcm_s16le',audioPath],{windowsHide:true}).status,0);results.push({audioPath,durationSeconds:1});}const joined=await joinAudio(results,dir);assert.equal(joined.decoded,true);assert.ok(joined.durationSeconds>1.9&&joined.durationSeconds<2.2);assert.equal(joined.audioSha256,hash(await readFile(joined.audioPath)));}finally{await rm(dir,{recursive:true,force:true});}});
+test('completed root is reused; missing media resumes checkpoint; sync failure keeps segments',async()=>{
+const dir=await mkdtemp(path.join(tmpdir(),'pi-article-test-'));let calls=0;const seen=[];const article={text:'A complete test paragraph.'};const bytes=Buffer.from('audio');
+const capture=async(input,out,opts)=>{calls++;seen.push(opts.resume);const result={sourceSha256:hash(input.text),audioSha256:hash(bytes),audioPath:path.join(out,'episode.mp3'),durationSeconds:2,adaptedText:input.text};await writeFile(result.audioPath,bytes);await writeFile(path.join(out,'result.json'),JSON.stringify(result));await writeFile(path.join(out,'checkpoint.json'),JSON.stringify({messageSid:'confirmed',rewrite:input.text}));return result;};
+const join=async()=>{const audioPath=path.join(dir,'episode.mp3');await writeFile(audioPath,bytes);return{audioPath,audioSha256:hash(bytes),durationSeconds:2,decoded:true};};
+try{await assert.rejects(generateArticle(article,dir,{capture,join,sync:()=>{throw new Error('persist failed');}}),/persist failed/);assert.equal((await readFile(path.join(dir,'segment-001','episode.mp3'))).length,bytes.length);await generateArticle(article,dir,{capture,join,resume:true});assert.equal(calls,1);await assert.rejects(readFile(path.join(dir,'segment-001','episode.mp3')),e=>e.code==='ENOENT');await rm(path.join(dir,'episode.mp3'));await generateArticle(article,dir,{capture,join,resume:true});assert.deepEqual(seen,[false,true]);}finally{await rm(dir,{recursive:true,force:true});}
+});
