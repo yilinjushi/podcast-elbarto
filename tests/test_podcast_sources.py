@@ -1,13 +1,11 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
-from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import podcast_bookmarks
+from podcast_import import import_file
 import podcast_sources
 from podcast_sources import enqueue_source
 
@@ -21,12 +19,12 @@ class PodcastSourceTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"PODCAST_SOURCE_DIR": str(self.root / "sources"), "PODCAST_STATE_FILE": str(self.state)})
         self.env.start()
         self.addCleanup(self.env.stop)
-        self.url = "https://x.com/writer/status/123"
-        self.content = {"title": "Title", "author": "Writer", "is_article": True,
+        self.source_id = "src-0123456789abcdef"
+        self.content = {"title": "Title", "author": "Writer",
                         "items": [{"type": "para", "text": "Complete body with a 2026 date."}, {"type": "image", "src": "https://example.com/image.png"}]}
 
     def enqueue(self):
-        return enqueue_source(url=self.url, **{key: self.content[key] for key in ("title", "author", "items")})
+        return enqueue_source(source_id=self.source_id, **{key: self.content[key] for key in ("title", "author", "items")})
 
     def test_full_snapshot_and_versioned_deduplication(self):
         first = self.enqueue()
@@ -54,9 +52,9 @@ class PodcastSourceTests(unittest.TestCase):
 
     def test_rejects_unsafe_identity_and_empty_text(self):
         with self.assertRaises(ValueError):
-            enqueue_source(url="https://x.com/u/status/../../escape", title="x", author="", items=[])
+            enqueue_source(source_id="../escape", title="x", author="", items=[])
         with self.assertRaises(ValueError):
-            enqueue_source(url=self.url, title="x", author="", items=[])
+            enqueue_source(source_id=self.source_id, title="x", author="", items=[])
         self.assertFalse(self.state.exists())
 
     def test_failed_atomic_queue_commit_leaves_prior_queue_and_retries(self):
@@ -78,20 +76,18 @@ class PodcastSourceTests(unittest.TestCase):
         self.assertTrue(self.enqueue()["enqueued"])
         self.assertEqual(len(json.loads(self.state.read_text())["tasks"]), 2)
 
-    def test_bookmark_scan_queues_source(self):
-        session = self.root / "session.json"
-        session.write_text("{}")
-        manager = MagicMock()
-        page = manager.__enter__.return_value.chromium.launch.return_value.new_context.return_value.new_page.return_value
-        with patch.dict(os.environ, {"X_SESSION_FILE": str(session)}), \
-             patch.object(podcast_bookmarks, "sync_playwright", return_value=manager), \
-             patch.object(podcast_bookmarks, "get_bookmark_urls", return_value=[self.url]), \
-             patch.object(podcast_bookmarks, "extract_content_from_page", return_value=self.content), \
-             patch.object(podcast_bookmarks, "wait_for_content"), \
-             patch.object(sys, "argv", ["podcast_bookmarks.py"]):
-            podcast_bookmarks.main()
-        self.assertEqual(len(json.loads(self.state.read_text())["tasks"]), 1)
-        page.goto.assert_called_once()
+    def test_manual_file_import_queues_versioned_source(self):
+        article = self.root / "articles" / "sample.md"
+        article.parent.mkdir()
+        article.write_text("# Sample\n\nA complete article.", encoding="utf-8")
+        first = import_file(article, article.parent)
+        self.assertTrue(first["enqueued"])
+        self.assertFalse(import_file(article, article.parent)["enqueued"])
+        article.write_text("# Sample\n\nA revised article.", encoding="utf-8")
+        self.assertTrue(import_file(article, article.parent)["enqueued"])
+        self.assertEqual(len(json.loads(self.state.read_text())["tasks"]), 2)
+        with self.assertRaises(ValueError):
+            import_file(self.root / "outside.txt", article.parent)
 
 
 if __name__ == "__main__":

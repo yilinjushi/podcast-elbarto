@@ -69,7 +69,7 @@ async function privateStore(request, env, url, headers) {
   const sha256 = request.headers.get('X-Content-SHA256') || '';
   if (!/^[a-f0-9]{64}$/.test(sha256)) return new Response(null, {status: 400, headers});
   // Bound the whole controlled namespace. Writers are serialized by the single
-  // workflow concurrency group; this check is not a distributed quota lock.
+  // Single local publisher process; this check is not a distributed quota lock.
   let total = 0, existing = 0, cursor;
   do {
     const listing = await env.AUDIO.list({prefix: root, cursor, limit: 1000});

@@ -1,7 +1,7 @@
 """Independent, versioned source snapshots for the single-writer podcast queue.
 
 No archive, website, mail or browser side effects. Queue status is never reset on
-repeat scans, including retired episodes. Run bookmark scans with one writer.
+repeat imports, including retired episodes. Use one writer at a time.
 """
 import hashlib
 import json
@@ -10,7 +10,6 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 from contextlib import contextmanager
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -61,24 +60,22 @@ def atomic_write(path: Path, text: str) -> None:
             os.unlink(temporary)
 
 
-def enqueue_source(*, url: str, title: str, author: str, items: list[dict]) -> dict:
+def enqueue_source(*, source_id: str, title: str, author: str, items: list[dict]) -> dict:
     state_path = Path(os.environ.get("PODCAST_STATE_FILE") or BASE_DIR / "state" / "podcast_queue.json")
     with queue_lock(state_path):
-        return _enqueue_source(url=url, title=title, author=author, items=items, state_path=state_path)
+        return _enqueue_source(source_id=source_id, title=title, author=author, items=items, state_path=state_path)
 
 
-def _enqueue_source(*, url: str, title: str, author: str, items: list[dict], state_path: Path) -> dict:
+def _enqueue_source(*, source_id: str, title: str, author: str, items: list[dict], state_path: Path) -> dict:
     """Persist every extracted item, then atomically enqueue its content version.
 
     text contains only extracted body blocks; descriptive metadata is separate.
     Non-text items are preserved and included in the version hash so changing an
     image or other substantive block does not silently reuse the old snapshot.
     """
-    parsed = urlsplit(url)
-    match = re.fullmatch(r"/[^/]+/status/(\d+)/?", parsed.path)
-    if parsed.scheme != "https" or parsed.hostname not in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"} or not match:
-        raise ValueError("Podcast source requires a valid HTTPS X status URL")
-    article_id = "x-" + match.group(1)
+    if not re.fullmatch(r"src-[a-f0-9]{16}", source_id):
+        raise ValueError("Podcast source requires a valid local source identity")
+    article_id = source_id
     text = "\n\n".join(item["text"] for item in items if item.get("type") != "image" and item.get("text"))
     if not text.strip():
         raise ValueError("Podcast source has no readable body text")
@@ -102,7 +99,7 @@ def _enqueue_source(*, url: str, title: str, author: str, items: list[dict], sta
     source_path = source_dir / "source.json"
     snapshot = {
         "schema_version": 1, "article_id": article_id, "body_hash": body_hash,
-        "metadata": {"title": title, "url": url, "author": author, "captured_at": timestamp, "source": "x_bookmark"},
+        "metadata": {"title": title, "url": "", "author": author, "captured_at": timestamp, "source": "local_file"},
         "text": text, "items": items,
     }
     atomic_write(source_path, json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n")
@@ -111,7 +108,7 @@ def _enqueue_source(*, url: str, title: str, author: str, items: list[dict], sta
         "id": task_id, "article_id": article_id, "body_hash": body_hash,
         "processing_version": PROCESSING_VERSION, "status": "source_ready",
         "source_path": Path(os.path.relpath(source_path.resolve(), state_path.parent.resolve())).as_posix(), "created_at": timestamp,
-        "title": title, "url": url, "author": author,
+        "title": title, "url": "", "author": author,
     }
     queue["tasks"][task_id] = task
     atomic_write(state_path, json.dumps(queue, ensure_ascii=False, indent=2) + "\n")

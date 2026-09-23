@@ -40,7 +40,7 @@ def create_store(backend, local_root):
 
 
 def task_work(root, task):
-    if not re.fullmatch(r'x-\d+-[a-f0-9]{64}-v\d+', task['id']):
+    if not re.fullmatch(r'src-[a-f0-9]{16}-[a-f0-9]{64}-v\d+', task['id']):
         raise ValueError('unsafe task identity')
     work = (root / task['id']).resolve()
     if not work.is_relative_to(root.resolve()):
@@ -75,11 +75,7 @@ def validate_source(queue_path, task):
         raise ValueError('source outside configured source root')
     source = read(source_path)
     metadata = source.get('metadata', {})
-    parsed = urlsplit(task['url'])
-    status = re.fullmatch(r'/[^/]+/status/(\d+)/?', parsed.path)
-    if parsed.scheme != 'https' or parsed.hostname not in {'x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'} or not status or parsed.username or parsed.password:
-        raise ValueError('invalid source URL')
-    if task['article_id'] != 'x-' + status.group(1) or source.get('article_id') != task['article_id'] or metadata.get('url') != task['url']:
+    if not re.fullmatch(r'src-[a-f0-9]{16}', task['article_id']) or source.get('article_id') != task['article_id'] or metadata.get('source') != 'local_file' or metadata.get('url') != '' or task.get('url') != '':
         raise ValueError('source identity mismatch')
     expected_hash = hashlib.sha256(json.dumps({'title': metadata.get('title'), 'items': source.get('items')}, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     expected_text = '\n\n'.join(x['text'] for x in source['items'] if x.get('type') != 'image' and x.get('text'))
@@ -129,7 +125,7 @@ def capture_input(work, source_path, source, task):
         if not text.strip():
             raise ValueError('empty authored script')
         return {'title':'', 'text':text, 'source_sha256':digest(source_path), 'url':task['url'], 'mode':'punctuation_only'}
-    return {'title':task['title'], 'text':source['text'], 'url':task['url'], 'source_sha256':digest(source_path)}
+    return {'title':'', 'text':source['text'], 'url':task['url'], 'source_sha256':digest(source_path)}
 
 
 def validate_checkpoint(work, source_path, source, task):

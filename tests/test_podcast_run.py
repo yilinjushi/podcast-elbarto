@@ -32,7 +32,7 @@ class RunnerTests(unittest.TestCase):
         env = patch.dict(os.environ, {'PODCAST_SOURCE_DIR': str(self.sources), 'PODCAST_STATE_FILE': str(self.queue)})
         env.start()
         self.addCleanup(env.stop)
-        self.task = enqueue_source(url='https://x.com/u/status/123', title='Title', author='A', items=[{'type':'para','text':'Original text.'}])
+        self.task = enqueue_source(source_id='src-0123456789abcdef', title='Title', author='A', items=[{'type':'para','text':'Original text.'}])
         self.source_path = self.queue.parent / self.task['source_path']
         self.work_root = self.root / 'work'
         self.work = self.work_root / self.task['id']
@@ -40,12 +40,12 @@ class RunnerTests(unittest.TestCase):
 
     def checkpoint(self):
         source = json.loads(self.source_path.read_text())
-        article = {'title':'Title','text': source['text'], 'source_sha256':digest(self.source_path)}
+        article = {'title':'','text': source['text'], 'url':'', 'source_sha256':digest(self.source_path)}
         save(self.work / 'input.json', article)
         input_hash = hashlib.sha256(json.dumps(article, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         text_hash = hashlib.sha256(source['text'].encode()).hexdigest()
         save(self.work/'segments.json', {'version':1,'sourceHash':input_hash,'ranges':[{'index':0,'start':0,'end':len(source['text']),'sha256':text_hash}]})
-        segment_input = {'title':'Title','includeTitle':True,'url':'','text':source['text'],'source_sha256':text_hash}
+        segment_input = {'title':'','includeTitle':True,'url':'','text':source['text'],'source_sha256':text_hash}
         segment = self.work/'segment-001'
         segment.mkdir(exist_ok=True)
         save(segment/'source.json',segment_input)

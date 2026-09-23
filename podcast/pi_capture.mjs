@@ -1,20 +1,11 @@
 import { chromium } from 'playwright';
 import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 export const PI_PROMPT_VERSION='faithful-spoken-copyedit-v2';
 export const PI_PUNCTUATION_PROMPT_VERSION='punctuation-only-v1';
-
-export function durableSync(){
-  if(process.env.PODCAST_DURABLE_SYNC!=='true')return;
-  const backend=process.env.PODCAST_STORE_BACKEND||'s3';
-  if(!['http','s3'].includes(backend))throw new Error('PI_DURABLE_SYNC_FAILED: unsupported storage backend');
-  const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-  const result=spawnSync(process.env.PODCAST_PYTHON||'python',[path.join(repo,'podcast_sync.py'),'save','--root',process.env.PODCAST_ROOT||repo,'--store',backend],{env:process.env,encoding:'utf8',windowsHide:true,timeout:300000,maxBuffer:1024*1024});
-  if(result.error||result.status!==0)throw new Error('PI_DURABLE_SYNC_FAILED: checkpoint persistence failed; execution stopped');
-}
 
 // Observed Pi DOM: message has a direct flex/w-full/items-center/gap-3
 // content wrapper followed by a separate controls wrapper (including Sources).
@@ -139,7 +130,6 @@ export async function generatePiAudio(article, outputDir, options = {}) {
     const oldSids = await page.locator('[data-chat-message]').evaluateAll(es => es.map(e => e.getAttribute('data-chat-message')));
     await composer.fill(prompt);
     await writeFile(checkpointPath, JSON.stringify({inputHash,status:'submitting',conversationUrl:page.url(),promptVersion,promptSha256},null,2), {flag:'wx'});
-    durableSync();
     await page.getByTestId('chat-composer-submit').click();
     // Bind to this exact submitted user message. A late page-opening greeting
     // must never count as the article response.
@@ -163,12 +153,11 @@ export async function generatePiAudio(article, outputDir, options = {}) {
     sid = await exactReply.getAttribute('data-chat-message');
     checkpoint = {inputHash,status:'rewritten',conversationUrl:page.url(),messageSid:sid,rewrite,textExtractionVersion:2,promptVersion,promptSha256};
     await writeFile(checkpointPath,JSON.stringify(checkpoint,null,2));
-    durableSync();
     }
     if(article.mode==='punctuation_only'){
       try{checkpoint.textValidation=assertPunctuationOnly(article,rewrite);checkpoint.status='rewritten';}
-      catch(error){checkpoint.status='text_changed';checkpoint.textValidation={passed:false,reason:error.message};await writeFile(checkpointPath,JSON.stringify(checkpoint,null,2));durableSync();throw error;}
-      await writeFile(checkpointPath,JSON.stringify(checkpoint,null,2));durableSync();
+      catch(error){checkpoint.status='text_changed';checkpoint.textValidation={passed:false,reason:error.message};await writeFile(checkpointPath,JSON.stringify(checkpoint,null,2));throw error;}
+      await writeFile(checkpointPath,JSON.stringify(checkpoint,null,2));
     }
     // This endpoint was observed in Pi's own audio player. The context supplies
     // its existing session cookies; no credentials are exported or persisted here.
@@ -222,7 +211,6 @@ export async function generatePiAudio(article, outputDir, options = {}) {
     };
     await writeFile(path.join(outputDir, 'rewrite.json'), JSON.stringify(result, null, 2));
     await writeFile(path.join(outputDir, 'result.json'), JSON.stringify(result, null, 2));
-    durableSync();
     if (options.exportState || process.env.PI_EXPORT_STATE) {
       await context.storageState({path:options.exportState || process.env.PI_EXPORT_STATE});
     }

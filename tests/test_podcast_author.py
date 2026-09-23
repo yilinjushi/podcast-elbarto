@@ -18,7 +18,7 @@ class AuthorTests(unittest.TestCase):
         self.work=self.root/'work'
         env=patch.dict(os.environ,{'PODCAST_SOURCE_DIR':str(self.root/'sources'),'PODCAST_STATE_FILE':str(self.queue)})
         env.start();self.addCleanup(env.stop)
-        self.task=enqueue_source(url='https://x.com/u/status/123',title='Title',author='Author',items=[{'type':'para','text':'Original complete source.'}])
+        self.task=enqueue_source(source_id='src-0123456789abcdef',title='Title',author='Author',items=[{'type':'para','text':'Original complete source.'}])
         self.source=self.queue.parent/self.task['source_path']
         self.script=self.root/'script.md';self.script.write_bytes(b'Expert terminology stays.\r\n')
         self.review=self.root/'review.json'

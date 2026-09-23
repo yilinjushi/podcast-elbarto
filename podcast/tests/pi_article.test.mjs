@@ -6,14 +6,13 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {splitArticle,generateArticle,joinAudio} from '../pi_article.mjs';
-import {durableSync,extractReplyBody,buildPiPrompt,assertPunctuationOnly} from '../pi_capture.mjs';
+import {extractReplyBody,buildPiPrompt,assertPunctuationOnly} from '../pi_capture.mjs';
 import {chromium} from 'playwright';
 const hash=x=>createHash('sha256').update(x).digest('hex');
 test('segments preserve every source character and bounded paragraph ranges',()=>{
 const source='Title\r\n\r\n'+Array.from({length:30},(_,i)=>`Paragraph ${i}: `+'word '.repeat(90)).join('\n\n');
 const groups=splitArticle(source);assert.equal(groups.map(g=>g.text).join(''),source);assert.ok(groups.length>2);groups.forEach((g,i)=>{assert.ok(g.text.length<=6000);assert.equal(g.start,i?groups[i-1].end:0);assert.equal(g.sha256,hash(g.text));});
 });
-test('durable sync failure is fail-closed and reports no child process output',()=>{const oldFlag=process.env.PODCAST_DURABLE_SYNC;const oldPython=process.env.PODCAST_PYTHON;try{process.env.PODCAST_DURABLE_SYNC='true';process.env.PODCAST_PYTHON='__missing_pi_test_python__';assert.throws(()=>durableSync(),{message:'PI_DURABLE_SYNC_FAILED: checkpoint persistence failed; execution stopped'});}finally{if(oldFlag===undefined)delete process.env.PODCAST_DURABLE_SYNC;else process.env.PODCAST_DURABLE_SYNC=oldFlag;if(oldPython===undefined)delete process.env.PODCAST_PYTHON;else process.env.PODCAST_PYTHON=oldPython;}});
 test('manual repair instructions stay separate from untouched source and are never inferred',()=>{const source='Keep 2022 and evals. This is article text.';const ordinary=buildPiPrompt({text:source});assert.ok(!ordinary.includes('<review_instructions>'));const repaired=buildPiPrompt({text:source,includeTitle:false,repairNotes:'Preserve the year 2022 and the term evals.'});assert.ok(repaired.includes('<review_instructions>'));assert.ok(repaired.endsWith(`<article>\n\n${source}\n</article>`));assert.ok(repaired.includes('Retain technical terms exactly'));assert.throws(()=>buildPiPrompt({text:source,repairNotes:' '}),/nonempty/);});
 test('punctuation-only gate preserves numeric expressions, signs, dates, terms and case',()=>{
 for(const [source,changed] of [['0.5','05'],['.5','5'],['-3','3'],['2022','recently'],['2022-03-04','2022-04-03'],['evals','evaluations'],['AI','ai'],['C++','C']])assert.throws(()=>assertPunctuationOnly({text:source},changed),/PI_TEXT_CHANGED/);

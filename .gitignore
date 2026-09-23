@@ -8,6 +8,8 @@ node_modules/
 podcast-work/
 podcast-store/
 state/
+sources/*
+!sources/.gitkeep
 logs/
 pi-session.json
 x_session.json

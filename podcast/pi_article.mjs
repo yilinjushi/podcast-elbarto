@@ -60,7 +60,7 @@ export async function generateArticle(article,outputDir,options={}){
   if(manifest&&(manifest.sourceHash!==sourceHash||JSON.stringify(manifest.ranges)!==JSON.stringify(segments.map(({index,start,end,sha256})=>({index,start,end,sha256})))))throw new Error('Source or segment plan changed; refuse to reuse this output directory');
   if(!manifest){manifest={version:1,sourceHash,source_sha256:article.source_sha256||options.inputSha256||sourceHash,mode:article.mode||'spoken_copyedit',scriptSha256:hash(article.text),status:'capturing',qualityStatus:'needs_review',ranges:segments.map(({index,start,end,sha256})=>({index,start,end,sha256}))};await atomicJson(manifestPath,manifest);}
   const cleanupCompleted=async()=>{
-    const sync=options.sync || (process.env.PODCAST_DURABLE_SYNC==='true'?(await import('./pi_capture.mjs')).durableSync:null);
+    const sync=options.sync || null;
     if(sync)await sync();
     for(const segment of segments)await rm(path.join(outputDir,`segment-${String(segment.index+1).padStart(3,'0')}`,'episode.mp3'),{force:true});
     if(sync)await sync();
